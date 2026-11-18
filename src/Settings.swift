@@ -32,6 +32,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let notifLabel = NSTextField(labelWithString: "")
     private let snapshotSoundCheck = NSButton(checkboxWithTitle: "截图后播放提示音",
                                               target: nil, action: nil)
+    /// 截图呼出键：点一下进入录制，按键即改。懒建，保证读到已注册的 UserDefaults 默认值。
+    private lazy var snapshotKeyRecorder = HotKeyRecorder(combo: HotKeyCombo.loadSnapshot())
+    private let snapshotKeyStat = NSTextField(labelWithString: "")
     private let screenPermissionLabel = NSTextField(labelWithString: "")
 
     // MARK: 显示
@@ -53,6 +56,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         login=\(loginCheck.state == .on ? "on" : "off")
         swapAlert=\(swapAlertCheck.state == .on ? "on" : "off")  sound=\(soundCheck.state == .on ? "on" : "off")  soundEnabled=\(soundCheck.isEnabled)
         diskAlert=\(diskAlertCheck.state == .on ? "on" : "off")  threshold=\(thresholdPopup.titleOfSelectedItem ?? "?")℃
+        snapshotHotKey=\(snapshotKeyRecorder.combo.displayText)  registered=\(app?.snapshotHotKeyOK ?? false)
         \(swapStat.stringValue)
         \(diskStat.stringValue)
         \(notifLabel.stringValue)
@@ -175,6 +179,24 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         // ---- 截图
         stack.addArrangedSubview(sectionTitle("截图"))
+
+        let keyRow = NSStackView(views: [
+            NSTextField(labelWithString: "呼出快捷键"),
+            snapshotKeyRecorder
+        ])
+        keyRow.orientation = .horizontal
+        keyRow.spacing = 10
+        keyRow.alignment = .firstBaseline
+        stack.addArrangedSubview(indented(keyRow))
+        snapshotKeyRecorder.onCommit = { [weak self] combo in
+            self?.commitHotKey(combo)
+        }
+        snapshotKeyRecorder.onCancel = { [weak self] in
+            self?.refreshSnapshotKeyStat()
+        }
+        styleStat(snapshotKeyStat)
+        stack.addArrangedSubview(indented(snapshotKeyStat))
+
         snapshotSoundCheck.target = self
         snapshotSoundCheck.action = #selector(toggleSnapshotSound)
         stack.addArrangedSubview(snapshotSoundCheck)
@@ -183,7 +205,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let permBtn = NSButton(title: "打开屏幕录制设置…", target: self,
                                action: #selector(openScreenRecordingSettings))
         stack.addArrangedSubview(permBtn)
-        stack.addArrangedSubview(hint("⌃⌘A 唤起截图：拖动自由框选，或鼠标悬停到窗口上单击整块。松开即复制到剪贴板，Enter 复制当前选区，Esc 取消。"))
+        stack.addArrangedSubview(hint("点快捷键按钮后按下新组合键（至少带一个 ⌘ / ⌃ / ⌥ / ⇧），Esc 取消。截图时拖动自由框选，或鼠标悬停到窗口上单击整块；松开即复制到剪贴板，Enter 复制当前选区。"))
 
         stack.addArrangedSubview(separator())
 
@@ -268,6 +290,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         swapStat.stringValue = "今日 \(app.swapAlertCount)/\(app.swapAlertCap) · \(app.swapAlertRule)"
         diskStat.stringValue = "今日 \(app.diskAlertCount)/\(app.diskAlertCap) · \(app.diskAlertRule)"
         snapshotSoundCheck.state = defaults.bool(forKey: "snapshotSound") ? .on : .off
+        refreshSnapshotKeyStat()
         screenPermissionLabel.stringValue = SnapshotController.hasPermission
             ? "屏幕录制权限：已授权"
             : "屏幕录制权限：未授权（截图会走不通，点下面按钮去开）"
@@ -276,6 +299,31 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     // MARK: 动作
+
+    /// 录到新组合：先挡掉和浏览器热键撞车的，再落盘 + 即时重注册
+    private func commitHotKey(_ combo: HotKeyCombo) {
+        if combo == .browserDefault {
+            NSSound.beep()
+            snapshotKeyStat.stringValue = "⚠ 与浏览器快捷键 ⌥⌘B 冲突，换一个"
+            snapshotKeyStat.textColor = .systemRed
+            return
+        }
+        combo.saveSnapshot()
+        app?.snapshotHotKeyDidChange()
+        refreshSnapshotKeyStat()
+    }
+
+    private func refreshSnapshotKeyStat() {
+        let combo = HotKeyCombo.loadSnapshot()
+        snapshotKeyRecorder.combo = combo
+        if let ok = app?.snapshotHotKeyOK, !ok {
+            snapshotKeyStat.stringValue = "⚠ \(combo.displayText) 注册失败，可能被其他 app 占用"
+            snapshotKeyStat.textColor = .systemRed
+        } else {
+            snapshotKeyStat.stringValue = "当前：\(combo.displayText) · 点击按钮可改"
+            snapshotKeyStat.textColor = .secondaryLabelColor
+        }
+    }
 
     @objc private func toggleLogin() {
         let service = SMAppService.mainApp

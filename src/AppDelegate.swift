@@ -67,6 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let defaults = UserDefaults.standard
     private var notifStatusText = "未知"
     private var menuIsOpen = false
+    /// 最近一次截图热键注册是否成功（设定页显示用）
+    private(set) var snapshotHotKeyOK = true
     /// 仅调试入口（--menu-dump）用：临时覆盖过热阈值，不写进设置
     var debugThreshold: Int?
 
@@ -146,7 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                   "alertSound": false,
                                                   "diskAlertEnabled": true,
                                                   "diskTempThreshold": 65,
-                                                  "snapshotSound": true])
+                                                  "snapshotSound": true,
+                                                  "snapshotHotKey": HotKeyCombo.snapshotDefault.rawValue])
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -170,7 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.appearance = NSAppearance(named: .aqua)
         statusItem.menu = menu
 
-        // ⌃⌘A 截图、⌥⌘B 浏览器。注册失败（被别的 app 占了）不致命，菜单里照样能点。
+        // 截图热键从设定读（默认 ⌃⌘A），浏览器固定 ⌥⌘B。
+        // 注册失败（被别的 app 占了）不致命，菜单里照样能点；设定页会标红提示。
         registerHotKeys()
 
         buildMainMenu()          // 浏览器窗口的 ⌘L / ⌘R / ⌘C 这些靠它
@@ -185,17 +189,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func registerHotKeys() {
-        GlobalHotKey.shared.register(.snapshot,
-                                     keyCode: kVK_ANSI_A,
-                                     modifiers: cmdKey | controlKey) {
-            SnapshotController.shared.trigger()
-        }
+        applySnapshotHotKey()
         if !GlobalHotKey.shared.register(.browser,
                                          keyCode: kVK_ANSI_B,
                                          modifiers: cmdKey | optionKey,
                                          handler: { [weak self] in self?.openBrowser() }) {
             NSLog("Good-tools: 浏览器热键 ⌥⌘B 注册失败（可能被其他 app 占用）")
         }
+    }
+
+    /// 按当前设定注册/重注册截图热键。register 内部会先解绑同一个 action，
+    /// 所以改键后直接再调一次即可，不用手动 UnregisterEventHotKey。
+    @discardableResult
+    func applySnapshotHotKey() -> Bool {
+        let combo = HotKeyCombo.loadSnapshot()
+        let ok = GlobalHotKey.shared.register(.snapshot,
+                                              keyCode: combo.keyCode,
+                                              modifiers: combo.modifiers) {
+            SnapshotController.shared.trigger()
+        }
+        snapshotHotKeyOK = ok
+        if !ok { NSLog("Good-tools: 截图热键 \(combo.displayText) 注册失败（可能被其他 app 占用）") }
+        return ok
     }
 
     // MARK: 刷新
@@ -424,6 +439,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !menuIsOpen { buildMenu() }
     }
 
+    /// 设定页改了快捷键：重注册 + 重建菜单文案（菜单开着就下次打开再更新）
+    func snapshotHotKeyDidChange() {
+        applySnapshotHotKey()
+        if !menuIsOpen { buildMenu() }
+    }
+
     /// 刚打开硬盘告警 / 改了开关：马上补采一次，别等 30 秒
     func forceDriveRefresh() {
         DriveTempReader.shared.refreshIfStale(force: true) { [weak self] in
@@ -469,7 +490,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(actionItem("浏览器　⌥⌘B", #selector(openBrowser), key: ""))
-        menu.addItem(actionItem("截图　⌃⌘A", #selector(takeScreenshot), key: ""))
+        menu.addItem(actionItem("截图　\(HotKeyCombo.loadSnapshot().displayText)", #selector(takeScreenshot), key: ""))
         if !SnapshotController.hasPermission {
             menu.addItem(screenPermissionItem())
         }
@@ -685,13 +706,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.mainMenu = main
     }
 
-    /// 调试用：注册一次热键并把结果打出来（不建菜单栏、不跑主循环）
+    /// 调试用：按当前设定注册热键并把结果打出来（不建菜单栏、不跑主循环）
     func debugRegisterHotKeys() {
-        let a = GlobalHotKey.shared.register(.snapshot, keyCode: kVK_ANSI_A,
-                                             modifiers: cmdKey | controlKey) {}
+        let snap = HotKeyCombo.loadSnapshot()
+        let a = GlobalHotKey.shared.register(.snapshot, keyCode: snap.keyCode,
+                                             modifiers: snap.modifiers) {}
         let b = GlobalHotKey.shared.register(.browser, keyCode: kVK_ANSI_B,
                                              modifiers: cmdKey | optionKey) {}
-        print("⌃⌘A=\(a ? "ok" : "fail")  ⌥⌘B=\(b ? "ok" : "fail")")
+        print("截图 \(snap.displayText)=\(a ? "ok" : "fail")  ⌥⌘B=\(b ? "ok" : "fail")")
     }
 
     /// 调试用：只把设定页构建出来，打印控件状态，不显示窗口
